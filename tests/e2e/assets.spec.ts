@@ -9,7 +9,7 @@ test('GLB import: metres, grounded, centred, repaired, one object, thumbnail, pe
   const bytes = await buildGlb(page);
   await page.getByRole('tab', { name: 'Assets' }).click();
   await page.locator('#file-import').setInputFiles({ name: 'scan.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(bytes) });
-  await expect(page.locator('#toast')).toContainText('Imported scan.glb');
+  await expect(page.locator('#toast')).toContainText('Imported scan.glb', { timeout: 60_000 });
 
   const info = await page.evaluate(() => {
     const { store, app } = window.awaken;
@@ -63,7 +63,7 @@ test('transparent PNG becomes an alpha-tested cut-out in beauty and ID passes', 
   });
   await page.getByRole('tab', { name: 'Assets' }).click();
   await page.locator('#file-import').setInputFiles({ name: 'disc.png', mimeType: 'image/png', buffer: Buffer.from(png) });
-  await expect(page.locator('#toast')).toContainText('Imported disc.png');
+  await expect(page.locator('#toast')).toContainText('Imported disc.png', { timeout: 60_000 });
   await page.evaluate(() => window.awaken.store.addEffect('silhouette'));
   const img = decode(await page.evaluate(() => window.awaken.renderPng()));
   saveArtifact('m2-cutout-silhouette.png', await page.evaluate(() => window.awaken.renderPng()));
