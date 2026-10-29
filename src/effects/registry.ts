@@ -66,7 +66,6 @@ export const EFFECTS: Record<EffectType, EffectDef> = {
       col('fill', 'Fill colour', '#000000'),
       col('bg', 'Background colour', '#ffffff'),
       sel('bgMode', 'Background', 0, [[0, 'Keep scene'], [1, 'Solid colour']], 'Keep the scene behind the silhouettes, or replace it.'),
-      chk('smooth', 'Edge smoothing', 1, 'Averages coverage over neighbouring pixels.'),
       chk('outline', 'Outline', 0),
       col('outlineC', 'Outline colour', '#ff3b1f'),
       range('outlineW', 'Outline width', 1, 8, 2, 0.5, 'Composition pixels.'),

@@ -3,7 +3,7 @@ import type { EffectInstance, EffectType, ProjectDoc, SceneNode } from '../doc/t
 import { EFFECTS } from '../effects/registry';
 import { CRT_PARAMS } from '../effects/crt-params';
 import { crtFragment, effectFragment, SHADERS } from './programs';
-import { makeApproxBlueNoise } from './noise';
+import { BLUE_NOISE_SIZE, makeBlueNoiseTexture } from './noise';
 import { drawAnnotations } from './annotations';
 import type { SceneWorld } from './world';
 
@@ -43,9 +43,11 @@ export class RenderGraph {
   private blitMat: THREE.ShaderMaterial;
   private overlayMat: THREE.ShaderMaterial;
   private geoMats = new Map<number, THREE.ShaderMaterial>();
-  private blue = makeApproxBlueNoise();
-  private maskData = new Uint8Array(256);
-  private maskTex: THREE.DataTexture;
+  private blue = makeBlueNoiseTexture();
+  private rtCover: THREE.WebGLRenderTarget;
+  private coverMats = new WeakMap<THREE.Mesh, { white: THREE.ShaderMaterial; black: THREE.ShaderMaterial }>();
+  private plainWhite = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+  private plainBlack = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
   private annoCanvas = document.createElement('canvas');
   private annoTex = new THREE.CanvasTexture(this.annoCanvas);
   private dummy = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
@@ -60,9 +62,8 @@ export class RenderGraph {
     this.rtHistA = new THREE.WebGLRenderTarget(4, 4, { ...HALF, depthBuffer: false });
     this.rtHistB = new THREE.WebGLRenderTarget(4, 4, { ...HALF, depthBuffer: false });
     this.dummy.needsUpdate = true;
-    this.maskTex = new THREE.DataTexture(this.maskData, 256, 1, THREE.RedFormat, THREE.UnsignedByteType);
-    this.maskTex.minFilter = this.maskTex.magFilter = THREE.NearestFilter;
-    this.maskTex.needsUpdate = true;
+    // 8-bit is enough for a coverage mask; MSAA resolve gives fractional edge values.
+    this.rtCover = new THREE.WebGLRenderTarget(4, 4, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, samples: 4 });
 
     this.fsq = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
     this.fsScene.add(this.fsq);
@@ -84,7 +85,7 @@ export class RenderGraph {
   setSize(w: number, h: number): void {
     if (w === this.width && h === this.height) return;
     this.width = w; this.height = h;
-    for (const rt of [this.rtBeauty, this.rtGeo, ...this.rtPing, this.rtHistA, this.rtHistB]) rt.setSize(w, h);
+    for (const rt of [this.rtBeauty, this.rtGeo, this.rtCover, ...this.rtPing, this.rtHistA, this.rtHistB]) rt.setSize(w, h);
     this.crtMat.uniforms.u_res.value.set(w, h);
     this.histValid = false;
   }
@@ -94,7 +95,7 @@ export class RenderGraph {
     let m = this.passes.get(type);
     if (m) return m;
     const uni: Record<string, THREE.IUniform> = {
-      tIn: { value: null }, tGeo: { value: null }, tBlue: { value: this.blue }, tMask: { value: this.maskTex },
+      tIn: { value: null }, tGeo: { value: null }, tBlue: { value: this.blue }, tCover: { value: this.rtCover.texture }, blueN: { value: BLUE_NOISE_SIZE },
       res: { value: new THREE.Vector2(4, 4) }, k: { value: 1 }, op: { value: 1 }, mAll: { value: 1 }, seed: { value: 7 },
     };
     for (const p of EFFECTS[type].params) uni['u_' + p.id] = { value: p.kind === 'col' ? new THREE.Color() : p.def };
@@ -185,6 +186,52 @@ export class RenderGraph {
     this.renderer.shadowMap.autoUpdate = auto;
   }
 
+  /**
+   * Antialiased coverage of the given nodes: targeted meshes white, every other mesh black, same camera and
+   * depth test as the beauty pass. MSAA resolve yields fractional edge coverage; occlusion by non-targeted
+   * objects is exact; the ground (shadow catcher) and background stay black.
+   */
+  private coveragePass(ids: Set<string>): void {
+    const w = this.world;
+    const saved: [THREE.Mesh, THREE.Material | THREE.Material[]][] = [];
+    const hidden: [THREE.Object3D, boolean][] = [];
+    for (const no of w.objects.values()) {
+      if (no.node.ground) { hidden.push([no.root, no.root.visible]); no.root.visible = false; continue; }
+      if (no.node.kind === 'group') continue;
+      const white = ids.has(no.node.id);
+      for (const m of no.meshes) {
+        const map = no.node.kind === 'image' ? (m.userData.orig as THREE.MeshStandardMaterial).map : null;
+        let mat: THREE.Material = white ? this.plainWhite : this.plainBlack;
+        if (map) {
+          let pair = this.coverMats.get(m);
+          if (!pair) {
+            // Pure 0/1 output gated only by the texture's alpha; RGB of the cut-out must not leak into coverage.
+            const mk = (c: number) => new THREE.ShaderMaterial({
+              vertexShader: SHADERS.geoVert, side: THREE.DoubleSide, uniforms: { map: { value: map }, c: { value: c } },
+              fragmentShader: 'uniform sampler2D map; uniform float c; varying vec2 vU; void main(){ if (texture2D(map, vU).a < .5) discard; gl_FragColor = vec4(vec3(c), 1.); }',
+            });
+            pair = { white: mk(1), black: mk(0) };
+            this.coverMats.set(m, pair);
+          }
+          mat = white ? pair.white : pair.black;
+        }
+        saved.push([m, m.material]); m.material = mat;
+      }
+    }
+    const bg = w.scene.background, env = w.scene.environment, gridVis = w.grid.visible;
+    w.scene.background = null; w.scene.environment = null; w.grid.visible = false;
+    const auto = this.renderer.shadowMap.autoUpdate, shadows = this.renderer.shadowMap.enabled;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.setRenderTarget(this.rtCover);
+    this.renderer.clear();
+    this.renderer.render(w.scene, w.camera);
+    for (const [m, mat] of saved) m.material = mat;
+    for (const [o, v] of hidden) o.visible = v;
+    w.scene.background = bg; w.scene.environment = env; w.grid.visible = gridVis;
+    this.renderer.shadowMap.autoUpdate = auto; this.renderer.shadowMap.enabled = shadows;
+  }
+
   private runEffect(doc: ProjectDoc, f: EffectInstance, src: THREE.Texture, dst: THREE.WebGLRenderTarget, fp: FrameParams): void {
     const m = this.pass(f.type), u = m.uniforms, t = f.target;
     u.tIn.value = src; u.tGeo.value = this.rtGeo.texture;
@@ -193,10 +240,11 @@ export class RenderGraph {
     u.op.value = f.opacity;
     u.seed.value = fp.seed;
     const whole = t.type === 'scene' || t.type === 'output';
-    u.mAll.value = whole ? 1 : 0;
-    this.maskData.fill(0);
-    if (!whole) for (const n of this.targetNodes(doc, f)) if (n.n < 256 && this.world.isShown(n.id)) this.maskData[n.n] = 255;
-    this.maskTex.needsUpdate = true;
+    // Silhouette fills object coverage even when it targets the whole scene; other effects treat a
+    // whole-scene target as the entire frame (background included).
+    const useCover = !whole || f.type === 'silhouette';
+    u.mAll.value = useCover ? 0 : 1;
+    if (useCover) this.coveragePass(new Set(this.targetNodes(doc, f).map((n) => n.id)));
     for (const p of EFFECTS[f.type].params) {
       const v = f.params[p.id];
       if (p.kind === 'col') (u['u_' + p.id].value as THREE.Color).copy(this.colour(String(v)));
@@ -294,8 +342,8 @@ export class RenderGraph {
   }
 
   dispose(): void {
-    for (const rt of [this.rtBeauty, this.rtGeo, ...this.rtPing, this.rtHistA, this.rtHistB]) rt.dispose();
+    for (const rt of [this.rtBeauty, this.rtGeo, this.rtCover, ...this.rtPing, this.rtHistA, this.rtHistB]) rt.dispose();
     for (const m of [...this.passes.values(), ...this.geoMats.values(), this.crtMat, this.blitMat, this.overlayMat]) m.dispose();
-    this.blue.dispose(); this.maskTex.dispose(); this.annoTex.dispose(); this.dummy.dispose();
+    this.blue.dispose(); this.plainWhite.dispose(); this.plainBlack.dispose(); this.annoTex.dispose(); this.dummy.dispose();
   }
 }

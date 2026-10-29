@@ -41,7 +41,7 @@ Done and verified: scaffold, port of the prototype's render graph/effects/render
 document migration, diagnostic scene, Playwright verification loop, static + runtime shader validation,
 goldens for all five frames, determinism and colour-fidelity tests. See `docs/VERIFICATION.md`.
 
-Not done (later milestones): model import (M2), antialiased masks / shadow mask / void-and-cluster blue noise (M3),
+Not done (later milestones): model import (M2), shadow mask (M3; antialiased masks and void-and-cluster blue noise are done),
 tuned Signal Ink and Surveillance look (M4), combined gizmo / text and shape layers (M5), CRT stage split, tiled export,
 preview/export parity (M6), mobile/accessibility pass, performance budget, context-loss recovery (M7).
 Dropped from the prototype for now: per-object animation, the image-plane cut-out path, GLB import, effect presets.

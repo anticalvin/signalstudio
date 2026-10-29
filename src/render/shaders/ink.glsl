@@ -35,7 +35,7 @@ void main() {
   vec2 dp = floor(gl_FragCoord.xy / max(u_ditherScale * k, 1.));
   float dv = .5;
   if (u_dither > .5 && u_dither < 1.5) dv = bayer(dp);
-  else if (u_dither > 1.5) dv = texture2D(tBlue, (dp + .5) / 64.).r;
+  else if (u_dither > 1.5) dv = texture2D(tBlue, (dp + .5) / blueN).r;
   float t = u_threshold + (dv - .5) * u_ditherAmt;
   float v = smoothstep(t - .015, t + .015, l);
   if (u_invert > .5) v = 1. - v;

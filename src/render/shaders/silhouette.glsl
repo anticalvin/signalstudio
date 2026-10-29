@@ -3,11 +3,6 @@ void main() {
   vec4 c = texture2D(tIn, vUv);
   vec4 g = texture2D(tGeo, vUv);
   float m = cover(vUv);
-  if (u_smooth > .5) {
-    m = 0.;
-    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) m += cover(vUv + vec2(float(i), float(j)) * px * .8);
-    m /= 9.;
-  }
   vec3 base = c.rgb;
   if (u_bgMode > .5 && g.g < .5) base = u_bg;
   float dn = clamp((g.r - 3.) / 12., 0., 1.);
